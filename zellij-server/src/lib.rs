@@ -52,7 +52,7 @@ use zellij_utils::{
     },
     data::{
         ConnectToSession, Event, InputMode, KeyWithModifier, LayoutInfo, LayoutWithError,
-        PluginCapabilities, Style, WebSharing,
+        PluginCapabilities, Style, ThemeHue, WebSharing,
     },
     errors::{prelude::*, ContextType, ErrorInstruction, FatalError, ServerContext},
     home::{default_layout_dir, get_default_data_dir},
@@ -128,6 +128,7 @@ pub enum ServerInstruction {
     WebServerStarted(String), // String -> base_url
     FailedToStartWebServer(String),
     ClearMouseHelpText(ClientId),
+    DetectedThemeHue(ThemeHue),
 }
 
 impl From<&ServerInstruction> for ServerContext {
@@ -176,6 +177,7 @@ impl From<&ServerInstruction> for ServerContext {
                 ServerContext::SendWebClientsForbidden
             },
             ServerInstruction::ClearMouseHelpText(..) => ServerContext::ClearMouseHelpText,
+            ServerInstruction::DetectedThemeHue(..) => ServerContext::DetectedThemeHue,
         }
     }
 }
@@ -234,6 +236,12 @@ impl SessionConfiguration {
             .or_else(|| Some(&self.saved_config))
             .cloned()
             .unwrap_or_default()
+    }
+    pub fn get_all_client_configs(&self) -> Vec<(ClientId, Config)> {
+        self.runtime_config
+            .iter()
+            .map(|(client_id, config)| (*client_id, config.clone()))
+            .collect()
     }
     pub fn reconfigure_runtime_config(
         &mut self,
@@ -323,6 +331,7 @@ pub(crate) struct SessionMetaData {
     // initialization because we don't want it to be overridden by
     // configuration changes, the only way it can be overwritten is by
     // explicit plugin action
+    pub detected_theme_hue: Option<ThemeHue>, // detected from terminal background color
     screen_thread: Option<thread::JoinHandle<()>>,
     pty_thread: Option<thread::JoinHandle<()>>,
     plugin_thread: Option<thread::JoinHandle<()>>,
@@ -359,6 +368,7 @@ impl SessionMetaData {
         &mut self,
         config_changes: Vec<(ClientId, Config)>,
         config_was_written_to_disk: bool,
+        detected_theme_hue: Option<ThemeHue>,
     ) {
         for (client_id, new_config) in config_changes {
             self.default_shell = new_config.options.default_shell.as_ref().map(|shell| {
@@ -378,7 +388,12 @@ impl SessionMetaData {
                         .default_mode
                         .unwrap_or_else(Default::default),
                     theme: new_config
-                        .theme_config(new_config.options.theme.as_ref())
+                        .theme_config_with_hue(
+                            new_config.options.theme.as_ref(),
+                            new_config.options.theme_light.as_ref(),
+                            new_config.options.theme_dark.as_ref(),
+                            detected_theme_hue,
+                        )
                         .unwrap_or_else(|| default_palette().into()),
                     simplified_ui: new_config.options.simplified_ui.unwrap_or(false),
                     default_shell: new_config.options.default_shell,
@@ -737,11 +752,19 @@ pub fn start_server(mut os_input: Box<dyn ServerOsApi>, socket_path: PathBuf) {
                     None => config.options.clone(),
                 };
 
+                // At initial connection, detected_theme_hue is None - will be set when
+                // terminal background color is detected. For "auto" theme, this means
+                // we'll use the dark fallback until detection occurs.
                 let client_attributes = ClientAttributes {
                     size: cli_assets.terminal_window_size,
                     style: Style {
                         colors: config
-                            .theme_config(runtime_config_options.theme.as_ref())
+                            .theme_config_with_hue(
+                                runtime_config_options.theme.as_ref(),
+                                runtime_config_options.theme_light.as_ref(),
+                                runtime_config_options.theme_dark.as_ref(),
+                                None, // No hue detected yet
+                            )
                             .unwrap_or_else(|| default_palette().into()),
                         rounded_corners: config.ui.pane_frames.rounded_corners,
                         hide_session_name: config.ui.pane_frames.hide_session_name,
@@ -891,11 +914,17 @@ pub fn start_server(mut os_input: Box<dyn ServerOsApi>, socket_path: PathBuf) {
                     None => config.options.clone(),
                 };
 
+                let detected_theme_hue = session_data.detected_theme_hue;
                 let client_attributes = ClientAttributes {
                     size: cli_assets.terminal_window_size,
                     style: Style {
                         colors: config
-                            .theme_config(runtime_config_options.theme.as_ref())
+                            .theme_config_with_hue(
+                                runtime_config_options.theme.as_ref(),
+                                runtime_config_options.theme_light.as_ref(),
+                                runtime_config_options.theme_dark.as_ref(),
+                                detected_theme_hue,
+                            )
                             .unwrap_or_else(|| default_palette().into()),
                         rounded_corners: config.ui.pane_frames.rounded_corners,
                         hide_session_name: config.ui.pane_frames.hide_session_name,
@@ -1488,12 +1517,22 @@ pub fn start_server(mut os_input: Box<dyn ServerOsApi>, socket_path: PathBuf) {
                     .session_configuration
                     .change_saved_config(new_config);
                 let config_was_written_to_disk = true;
+                let detected_theme_hue = session_data
+                    .read()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .detected_theme_hue;
                 session_data
                     .write()
                     .unwrap()
                     .as_mut()
                     .unwrap()
-                    .propagate_configuration_changes(changes, config_was_written_to_disk);
+                    .propagate_configuration_changes(
+                        changes,
+                        config_was_written_to_disk,
+                        detected_theme_hue,
+                    );
                 let client_ids = session_state.read().unwrap().client_ids();
                 for client_id in client_ids {
                     send_to_client!(
@@ -1655,6 +1694,47 @@ pub fn start_server(mut os_input: Box<dyn ServerOsApi>, socket_path: PathBuf) {
                     .senders
                     .send_to_screen(ScreenInstruction::ClearMouseHelpText(client_id))
                     .unwrap();
+            },
+            ServerInstruction::DetectedThemeHue(detected_hue) => {
+                // Store the detected theme hue
+                let previous_hue = {
+                    let mut session_data_guard = session_data.write().unwrap();
+                    let session_meta = session_data_guard.as_mut().unwrap();
+                    let previous = session_meta.detected_theme_hue;
+                    session_meta.detected_theme_hue = Some(detected_hue);
+                    previous
+                };
+
+                // If this is the first detection or hue changed, and theme is "auto",
+                // trigger reconfiguration for all clients
+                if previous_hue != Some(detected_hue) {
+                    let session_data_guard = session_data.read().unwrap();
+                    let session_meta = session_data_guard.as_ref().unwrap();
+
+                    // Check if any client has theme set to "auto"
+                    let configs_needing_update: Vec<(ClientId, Config)> = session_meta
+                        .session_configuration
+                        .get_all_client_configs()
+                        .into_iter()
+                        .filter(|(_, config)| {
+                            config.options.theme.as_ref().map(|t| t == "auto").unwrap_or(false)
+                        })
+                        .collect();
+
+                    if !configs_needing_update.is_empty() {
+                        drop(session_data_guard);
+                        session_data
+                            .write()
+                            .unwrap()
+                            .as_mut()
+                            .unwrap()
+                            .propagate_configuration_changes(
+                                configs_needing_update,
+                                false,
+                                Some(detected_hue),
+                            );
+                    }
+                }
             },
         }
     }
@@ -1936,6 +2016,7 @@ fn init_session(
         #[cfg(not(feature = "web_server_capability"))]
         web_sharing: WebSharing::Disabled,
         config_file_path: cli_assets.config_file_path,
+        detected_theme_hue: None,
     }
 }
 
@@ -2103,12 +2184,22 @@ fn update_new_saved_config(
                         .session_configuration
                         .change_saved_config(written_config);
                     let config_was_written_to_disk = true;
+                    let detected_theme_hue = session_data
+                        .read()
+                        .unwrap()
+                        .as_ref()
+                        .unwrap()
+                        .detected_theme_hue;
                     session_data
                         .write()
                         .unwrap()
                         .as_mut()
                         .unwrap()
-                        .propagate_configuration_changes(changes, config_was_written_to_disk);
+                        .propagate_configuration_changes(
+                            changes,
+                            config_was_written_to_disk,
+                            detected_theme_hue,
+                        );
                 },
                 Err(e) => {
                     let error_path = e
@@ -2130,6 +2221,12 @@ fn update_new_saved_config(
             }
         } else if runtime_config_changed {
             let config_was_written_to_disk = false;
+            let detected_theme_hue = session_data
+                .read()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .detected_theme_hue;
             session_data
                 .write()
                 .unwrap()
@@ -2138,6 +2235,7 @@ fn update_new_saved_config(
                 .propagate_configuration_changes(
                     vec![(client_id, new_config)],
                     config_was_written_to_disk,
+                    detected_theme_hue,
                 );
         }
     }

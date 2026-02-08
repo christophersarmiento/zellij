@@ -2,9 +2,14 @@ use crate::keyboard_parser::KittyKeyboardParser;
 use crate::os_input_output::ClientOsApi;
 use crate::stdin_ansi_parser::StdinAnsiParser;
 use crate::InputInstruction;
+use std::io::Write;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use termwiz::input::{InputEvent, InputParser};
 use zellij_utils::channels::SenderWithContext;
+
+const BACKGROUND_COLOR_POLL_INTERVAL_SECS: u64 = 1;
+const BACKGROUND_COLOR_POLL_STARTUP_DELAY_SECS: u64 = 2;
 
 fn send_done_parsing_after_query_timeout(
     send_input_instructions: SenderWithContext<InputInstruction>,
@@ -133,5 +138,37 @@ pub(crate) fn stdin_loop(
                 break;
             },
         }
+    }
+}
+
+pub(crate) fn background_color_poll_loop(
+    os_input: Box<dyn ClientOsApi>,
+    stdin_ansi_parser: Arc<Mutex<StdinAnsiParser>>,
+) {
+    // Wait before starting to poll to avoid interfering with initial startup query
+    std::thread::sleep(Duration::from_secs(BACKGROUND_COLOR_POLL_STARTUP_DELAY_SECS));
+
+    loop {
+        std::thread::sleep(Duration::from_secs(BACKGROUND_COLOR_POLL_INTERVAL_SECS));
+
+        // Enable parsing with a short deadline
+        {
+            let mut parser = stdin_ansi_parser.lock().unwrap();
+            parser.enable_background_poll_parsing();
+        }
+
+        // Send the OSC 11 query to stdout
+        let query = StdinAnsiParser::background_color_query_string();
+        let mut stdout = os_input.get_stdout_writer();
+        if let Err(e) = stdout.write_all(query.as_bytes()) {
+            log::error!("Failed to write background color query: {}", e);
+            continue;
+        }
+        if let Err(e) = stdout.flush() {
+            log::error!("Failed to flush background color query: {}", e);
+        }
+
+        // The response will be parsed by stdin_loop since should_parse() returns true
+        // and flows through the existing AnsiStdinInstruction::BackgroundColor path
     }
 }

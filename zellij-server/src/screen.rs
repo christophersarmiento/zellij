@@ -56,10 +56,14 @@ use crate::{
     ClientId, ServerInstruction,
 };
 use zellij_utils::{
-    data::{Event, InputMode, ModeInfo, Palette, PaletteColor, PluginCapabilities, Style, TabInfo},
+    data::{
+        Event, InputMode, ModeInfo, Palette, PaletteColor, PluginCapabilities, Style, TabInfo,
+        ThemeHue,
+    },
     errors::{ContextType, ScreenContext},
     input::get_mode_info,
     ipc::{ClientAttributes, PixelDimensions, ServerToClientMsg},
+    shared::detect_theme_hue,
 };
 
 /// Get the active tab and call a closure on it
@@ -1526,6 +1530,13 @@ impl Screen {
         {
             let bg_palette_color = PaletteColor::Rgb((r, g, b));
             self.terminal_emulator_colors.borrow_mut().bg = bg_palette_color;
+
+            // Compute and send the detected theme hue to the server
+            let detected_hue = detect_theme_hue(bg_palette_color);
+            let _ = self
+                .bus
+                .senders
+                .send_to_server(ServerInstruction::DetectedThemeHue(detected_hue));
         }
     }
 

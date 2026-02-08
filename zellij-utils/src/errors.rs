@@ -540,6 +540,7 @@ pub enum ServerContext {
     FailedToStartWebServer,
     SendWebClientsForbidden,
     ClearMouseHelpText,
+    DetectedThemeHue,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

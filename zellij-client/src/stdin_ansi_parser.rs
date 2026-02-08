@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 const STARTUP_PARSE_DEADLINE_MS: u64 = 500;
+const BACKGROUND_POLL_PARSE_DEADLINE_MS: u64 = 30;
 use lazy_static::lazy_static;
 use regex::Regex;
 use zellij_utils::{
@@ -98,6 +99,15 @@ impl StdinAnsiParser {
     }
     pub fn startup_query_duration(&self) -> u64 {
         STARTUP_PARSE_DEADLINE_MS
+    }
+    pub fn background_color_query_string() -> &'static str {
+        // OSC 11 query for background color: <ESC>]11;?<ESC>\
+        "\u{1b}]11;?\u{1b}\u{5c}"
+    }
+    pub fn enable_background_poll_parsing(&mut self) {
+        // Set a short parse deadline for polling responses
+        self.parse_deadline =
+            Some(Instant::now() + Duration::from_millis(BACKGROUND_POLL_PARSE_DEADLINE_MS));
     }
     pub fn parse(&mut self, mut raw_bytes: Vec<u8>) -> Vec<AnsiStdinInstruction> {
         for byte in raw_bytes.drain(..) {

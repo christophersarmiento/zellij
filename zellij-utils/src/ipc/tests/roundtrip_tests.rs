@@ -433,6 +433,8 @@ fn test_client_messages() {
             configuration_options: Some(Options {
                 simplified_ui: Some(true),
                 theme: Some("theme".to_owned()),
+                theme_light: Some("light-theme".to_owned()),
+                theme_dark: Some("dark-theme".to_owned()),
                 default_mode: Some(InputMode::Normal),
                 default_shell: Some(PathBuf::from("default_shell")),
                 default_cwd: Some(PathBuf::from("default_cwd")),

@@ -1,4 +1,4 @@
-use crate::data::Styling;
+use crate::data::{Styling, ThemeHue};
 
 #[cfg(not(target_family = "wasm"))]
 use crate::data::{LayoutInfo, LayoutWithError};
@@ -201,6 +201,32 @@ impl Config {
         match &theme_name {
             Some(theme_name) => self.themes.get_theme(theme_name).map(|theme| theme.palette),
             None => self.themes.get_theme("default").map(|theme| theme.palette),
+        }
+    }
+    /// Resolves the theme config, handling "auto" theme with light/dark selection based on
+    /// detected terminal background hue.
+    pub fn theme_config_with_hue(
+        &self,
+        theme_name: Option<&String>,
+        theme_light: Option<&String>,
+        theme_dark: Option<&String>,
+        detected_hue: Option<ThemeHue>,
+    ) -> Option<Styling> {
+        match theme_name {
+            Some(name) if name == "auto" => {
+                // When theme is "auto", select based on detected hue
+                let hue = detected_hue.unwrap_or(ThemeHue::Dark);
+                let resolved_theme = match hue {
+                    ThemeHue::Light => theme_light,
+                    ThemeHue::Dark => theme_dark,
+                };
+                // If no light/dark theme specified, fall back to default
+                match resolved_theme {
+                    Some(theme_name) => self.themes.get_theme(theme_name).map(|t| t.palette),
+                    None => self.themes.get_theme("default").map(|t| t.palette),
+                }
+            },
+            _ => self.theme_config(theme_name),
         }
     }
     /// Gets default configuration from assets

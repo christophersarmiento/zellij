@@ -988,6 +988,8 @@ message RunEditFileAction {
 message Options {
   optional bool simplified_ui = 1;
   optional string theme = 2;
+  optional string theme_light = 42;
+  optional string theme_dark = 43;
   optional InputMode default_mode = 3;
   optional string default_shell = 4;
   optional string default_cwd = 5;

@@ -78,7 +78,7 @@ impl From<std::io::Error> for RemoteClientError {
 use crate::stdin_ansi_parser::{AnsiStdinInstruction, StdinAnsiParser, SyncOutput};
 use crate::{
     command_is_executing::CommandIsExecuting, input_handler::input_loop,
-    os_input_output::ClientOsApi, stdin_handler::stdin_loop,
+    os_input_output::ClientOsApi, stdin_handler::{stdin_loop, background_color_poll_loop},
 };
 use termwiz::input::InputEvent;
 use zellij_utils::cli::CliArgs;
@@ -836,6 +836,16 @@ pub fn start_client(
                     stdin_ansi_parser,
                     explicitly_disable_kitty_keyboard_protocol,
                 )
+            }
+        });
+
+    let _background_color_poll_thread = thread::Builder::new()
+        .name("background_color_poll".to_string())
+        .spawn({
+            let os_input = os_input.clone();
+            let stdin_ansi_parser = stdin_ansi_parser.clone();
+            move || {
+                background_color_poll_loop(os_input, stdin_ansi_parser)
             }
         });
 

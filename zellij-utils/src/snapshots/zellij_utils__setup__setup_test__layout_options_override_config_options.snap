@@ -5,6 +5,8 @@ expression: "format!(\"{:#?}\", options)"
 Options {
     simplified_ui: None,
     theme: None,
+    theme_light: None,
+    theme_dark: None,
     default_mode: None,
     default_shell: None,
     default_cwd: None,

@@ -555,6 +555,8 @@ impl From<crate::input::options::Options>
         Self {
             simplified_ui: options.simplified_ui,
             theme: options.theme,
+            theme_light: options.theme_light,
+            theme_dark: options.theme_dark,
             default_mode: options.default_mode.map(|m| input_mode_to_proto_i32(m)),
             default_shell: options
                 .default_shell
@@ -633,6 +635,8 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
         Ok(Self {
             simplified_ui: options.simplified_ui,
             theme: options.theme,
+            theme_light: options.theme_light,
+            theme_dark: options.theme_dark,
             default_mode: options
                 .default_mode
                 .map(|m| proto_i32_to_input_mode(m))
