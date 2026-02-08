@@ -861,9 +861,17 @@ impl Grid {
             for line in &mut viewport_canonical_lines {
                 let mut trim_at = None;
                 for (index, character) in line.columns.iter().enumerate() {
-                    if character.character != EMPTY_TERMINAL_CHARACTER.character {
+                    let is_trimmable_space = character.character
+                        == EMPTY_TERMINAL_CHARACTER.character
+                        && matches!(character.styles.background, Some(AnsiCode::Reset) | None);
+
+                    if !is_trimmable_space {
+                        // we can't trim this character, meaning that if we had a previous
+                        // character that we marked as the trim_at point, we need to clear it
                         trim_at = None;
                     } else if trim_at.is_none() {
+                        // we CAN trim this character, set the trim_at point only if it's not set
+                        // because we want the trim_at point to be the EARLIEST trimmable character
                         trim_at = Some(index);
                     }
                 }
@@ -1842,6 +1850,12 @@ impl Grid {
             let old_selection = self.selection;
             self.selection.end(*end);
             self.update_selected_lines(&old_selection, &self.selection.clone());
+        } else {
+            // we do this rather than using .end() so that the selection will be marked as inactive
+            // (so we won't keep changing its start/end points as we scroll) but so we won't update
+            // its end position to the above "end" position (which is incorrect behavior for
+            // double/triple click - it will mean we won't mark until the end of the word/line)
+            self.selection.finalize();
         }
         self.mark_for_rerender();
     }

@@ -4128,3 +4128,237 @@ fn cannot_escape_scroll_region() {
     }
     assert_snapshot!(format!("{:?}", grid));
 }
+
+#[test]
+fn preserve_background_color_on_resize() {
+    use crate::panes::terminal_character::{AnsiCode, EMPTY_TERMINAL_CHARACTER};
+
+    let mut vte_parser = vte::Parser::new();
+    let sixel_image_store = Rc::new(RefCell::new(SixelImageStore::default()));
+    let terminal_emulator_color_codes = Rc::new(RefCell::new(HashMap::new()));
+    let debug = false;
+    let arrow_fonts = true;
+    let styled_underlines = true;
+    let osc8_hyperlinks = true;
+    let explicitly_disable_kitty_keyboard_protocol = false;
+    let mut grid = Grid::new(
+        10,
+        20,
+        Rc::new(RefCell::new(Palette::default())),
+        terminal_emulator_color_codes,
+        Rc::new(RefCell::new(LinkHandler::new())),
+        Rc::new(RefCell::new(None)),
+        sixel_image_store,
+        Style::default(),
+        debug,
+        arrow_fonts,
+        styled_underlines,
+        osc8_hyperlinks,
+        explicitly_disable_kitty_keyboard_protocol,
+    );
+
+    let mut parse = |s, grid: &mut Grid| {
+        for b in Vec::from(s) {
+            vte_parser.advance(&mut *grid, b)
+        }
+    };
+
+    // Write text with red background that extends to end of line
+    // ESC[41m = red background
+    // ESC[K = clear to end of line (fills with current background)
+    // ESC[0m = reset
+    let content = "test\x1b[41m\x1b[K\x1b[0m";
+    parse(content, &mut grid);
+
+    // Check that characters after "test" have red background before resize
+    let first_row = &grid.viewport[0];
+    let background_char_count_before = first_row
+        .columns
+        .iter()
+        .enumerate()
+        .filter(|(i, c)| *i >= 4 && c.styles.background != Some(AnsiCode::Reset))
+        .count();
+    assert!(
+        background_char_count_before > 0,
+        "Should have characters with background color before resize"
+    );
+
+    // Also check that plain trailing spaces are properly trimmed (regression test)
+    let content2 = "\r\n\rplain text with spaces    ";
+    parse(content2, &mut grid);
+
+    // Resize the grid
+    grid.change_size(10, 30);
+
+    // Check that the background color is preserved after resize
+    let first_row = &grid.viewport[0];
+    let background_char_count_after = first_row
+        .columns
+        .iter()
+        .enumerate()
+        .filter(|(i, c)| *i >= 4 && c.styles.background != Some(AnsiCode::Reset))
+        .count();
+    assert_eq!(
+        background_char_count_before, background_char_count_after,
+        "Background colored characters should be preserved after resize"
+    );
+
+    // Verify that the second line doesn't have excessive trailing spaces
+    // (it should be trimmed since they're plain spaces without background color)
+    let second_row = &grid.viewport[1];
+    let trailing_spaces = second_row
+        .columns
+        .iter()
+        .rev()
+        .take_while(|c| c.character == EMPTY_TERMINAL_CHARACTER.character)
+        .count();
+    // All trailing plain spaces should be completely removed
+    assert_eq!(
+        trailing_spaces, 0,
+        "Plain trailing spaces should be completely trimmed, but found {} trailing spaces",
+        trailing_spaces
+    );
+}
+
+fn create_grid_with_content(content: &str) -> Grid {
+    let mut vte_parser = vte::Parser::new();
+    let sixel_image_store = Rc::new(RefCell::new(SixelImageStore::default()));
+    let terminal_emulator_color_codes = Rc::new(RefCell::new(HashMap::new()));
+    let mut grid = Grid::new(
+        20,
+        80,
+        Rc::new(RefCell::new(Palette::default())),
+        terminal_emulator_color_codes,
+        Rc::new(RefCell::new(LinkHandler::new())),
+        Rc::new(RefCell::new(None)),
+        sixel_image_store,
+        Style::default(),
+        false,
+        true,
+        true,
+        true,
+        false,
+    );
+    for byte in content.as_bytes() {
+        vte_parser.advance(&mut grid, *byte);
+    }
+    grid
+}
+
+#[test]
+fn double_click_selection_preserved_after_scroll() {
+    let content = "line 0\nline 1\nline 2\nline 3\nline 4\nthis is a word test\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\n";
+    let mut grid = create_grid_with_content(content);
+
+    for _ in 0..20 {
+        grid.add_canonical_line();
+    }
+
+    let word_position = Position::new(5, 10);
+    grid.start_selection(&word_position);
+
+    let selection_before = grid.get_selected_text();
+    let word_start = grid.selection.start;
+    let word_end = grid.selection.end;
+
+    grid.end_selection(&word_position);
+
+    grid.scroll_up_one_line();
+
+    let selection_after_start = grid.selection.start;
+    let selection_after_end = grid.selection.end;
+
+    assert_eq!(selection_after_start.line.0, word_start.line.0 + 1);
+    assert_eq!(selection_after_end.line.0, word_end.line.0 + 1);
+    assert_eq!(selection_after_start.column, word_start.column);
+    assert_eq!(selection_after_end.column, word_end.column);
+
+    let text_after = grid.get_selected_text();
+    assert_eq!(selection_before, text_after);
+}
+
+#[test]
+fn triple_click_selection_preserved_after_scroll() {
+    let content = "line 0\nline 1\nline 2\nline 3\nline 4\nthis is line five with some text\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\n";
+    let mut grid = create_grid_with_content(content);
+
+    for _ in 0..20 {
+        grid.add_canonical_line();
+    }
+
+    let line_position = Position::new(5, 15);
+    grid.start_selection(&line_position);
+    grid.start_selection(&line_position);
+    grid.start_selection(&line_position);
+
+    let selection_before = grid.get_selected_text();
+    let line_start = grid.selection.start;
+    let line_end = grid.selection.end;
+
+    grid.end_selection(&line_position);
+
+    grid.scroll_up_one_line();
+
+    let selection_after_start = grid.selection.start;
+    let selection_after_end = grid.selection.end;
+
+    assert_eq!(selection_after_start.line.0, line_start.line.0 + 1);
+    assert_eq!(selection_after_end.line.0, line_end.line.0 + 1);
+    assert_eq!(selection_after_start.column, line_start.column);
+    assert_eq!(selection_after_end.column, line_end.column);
+
+    let text_after = grid.get_selected_text();
+    assert_eq!(selection_before, text_after);
+}
+
+#[test]
+fn double_click_selection_moves_with_multiple_scrolls() {
+    let content = "line 0\nline 1\nline 2\nline 3\nline 4\nthis is a word test\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\n";
+    let mut grid = create_grid_with_content(content);
+
+    for _ in 0..20 {
+        grid.add_canonical_line();
+    }
+
+    let word_position = Position::new(5, 10);
+    grid.start_selection(&word_position);
+
+    let initial_start = grid.selection.start;
+    let initial_end = grid.selection.end;
+
+    grid.end_selection(&word_position);
+
+    for _ in 0..5 {
+        grid.scroll_up_one_line();
+    }
+
+    assert_eq!(grid.selection.start.line.0, initial_start.line.0 + 5);
+    assert_eq!(grid.selection.end.line.0, initial_end.line.0 + 5);
+    assert_eq!(grid.selection.start.column, initial_start.column);
+    assert_eq!(grid.selection.end.column, initial_end.column);
+}
+
+#[test]
+fn single_click_drag_selection_preserved_after_scroll() {
+    let content = "line 0\nline 1\nline 2\nline 3\nline 4\nsome text here\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\n";
+    let mut grid = create_grid_with_content(content);
+
+    for _ in 0..20 {
+        grid.add_canonical_line();
+    }
+
+    grid.start_selection(&Position::new(5, 5));
+    grid.update_selection(&Position::new(5, 10));
+
+    let start_before = grid.selection.start;
+    let end_before = grid.selection.end;
+
+    grid.end_selection(&Position::new(5, 10));
+
+    grid.scroll_up_one_line();
+
+    assert_eq!(grid.selection.start.line.0, start_before.line.0 + 1);
+    assert_eq!(grid.selection.end.line.0, end_before.line.0 + 1);
+    assert_eq!(grid.selection.start.column, start_before.column);
+    assert_eq!(grid.selection.end.column, end_before.column);
+}
